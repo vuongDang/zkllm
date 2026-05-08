@@ -61,3 +61,6 @@ make all
 ```bash
 python full_run.py "Your prompt here" --max_new_tokens 1
 ```
+Actually seq_len is fixed at 256 currently.
+If the prompt is smaller the rest is padded with 0 which creates really weird results.
+Prompt of size seq_len should be used

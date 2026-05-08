@@ -84,7 +84,7 @@ int main(int argc, char *argv[])
         
         auto X = FrTensor::matmul(Q, K.transpose(seq_len, d), seq_len, d, seq_len);
 
-        zkSoftmax softmax({1<<8, 1<<20, 1<<20}, 1, 0, 1UL<<32, {1<<18, 1<<22}, seq_len, seq_len, d, 1);
+        zkSoftmax softmax({1<<16, 1<<16, 1<<16}, 1, 0, 1UL<<32, {1<<16, 1<<24}, seq_len, seq_len, d, 1);
         Rescaling rs1(1<< 20), rs2(1<<20);
 
         FrTensor shift(seq_len), X_shifted(seq_len * seq_len);

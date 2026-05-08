@@ -15,10 +15,10 @@ ACCU_LOGSF   = 20
 SWIGLU_TABLE = 'swiglu-table.bin'
 
 
-def padded_seq_len(seq_len, embed_dim, scaling_factor=1 << 20):
+def padded_seq_len(seq_len, embed_dim, scaling_factor=1 << 16):
     # Constraints from ZK proof components:
     # 1. seq_len * embed_dim must be a power of 2 and divisible by scaling_factor (rescaling proofs)
-    # 2. seq_len^2 must be divisible by scaling_factor (zkSoftmax tLookupRangeMapping with bs={1<<8,1<<20,1<<20})
+    # 2. seq_len^2 must be divisible by scaling_factor (zkSoftmax tLookupRangeMapping with bs={1<<16,1<<16,1<<16})
     p = 1
     while p < seq_len or (p * embed_dim) % scaling_factor != 0 or (p * p) % scaling_factor != 0:
         p <<= 1
