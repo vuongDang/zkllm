@@ -23,8 +23,8 @@ if __name__ == '__main__':
     args = parser.parse_args()
     model_card = f"meta-llama/Llama-2-{args.model_size}b-hf"
     scaling_factor = 1 << args.log_scaling_factor
-    tokenizer = AutoTokenizer.from_pretrained(model_card, local_files_only = True, cache_dir = "./model-storage")
-    model = AutoModelForCausalLM.from_pretrained(model_card, local_files_only = True, cache_dir = "./model-storage")
+    tokenizer = AutoTokenizer.from_pretrained(model_card, local_files_only = True)
+    model = AutoModelForCausalLM.from_pretrained(model_card, local_files_only = True)
 
     os.makedirs(f"./zkllm-workdir/Llama-2-{args.model_size}b", exist_ok = True)
 

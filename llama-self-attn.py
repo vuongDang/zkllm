@@ -31,7 +31,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     model_card = f"meta-llama/Llama-2-{args.model_size}b-hf"
 
-    model = AutoModelForCausalLM.from_pretrained(model_card, local_files_only = True, cache_dir = "./model-storage")
+    model = AutoModelForCausalLM.from_pretrained(model_card, local_files_only = True)
     layer = model.model.layers[args.layer]
     embed_dim = layer.self_attn.q_proj.in_features
 
