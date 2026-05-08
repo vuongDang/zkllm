@@ -59,5 +59,5 @@ make all
 ### 7. Run
 
 ```bash
-python full_run.py "Your prompt here" --max_new_tokens 10
+python full_run.py "Your prompt here" --max_new_tokens 1
 ```

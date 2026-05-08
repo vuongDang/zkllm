@@ -151,7 +151,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='zkLLM multi-token generation with LLaMA-2')
     parser.add_argument('text', type=str, help='Input prompt')
     parser.add_argument('--model_size', type=int, choices=[7, 13], default=7)
-    parser.add_argument('--max_new_tokens', type=int, default=20)
+    parser.add_argument('--max_new_tokens', type=int, default=1)
     args = parser.parse_args()
 
     if os.system('make all') != 0:
