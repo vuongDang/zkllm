@@ -1,10 +1,12 @@
 import os
 import sys
+import json
 import argparse
 import math
 import torch
 import numpy as np
 
+import torch.nn.functional as F
 import fileio_utils
 from fileio_utils import load_int, save_int, to_int64, to_float, fromto_int64
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -31,6 +33,24 @@ def rotate_half(x):
     return torch.cat((-x2, x1), dim=-1)
 
 
+def setup(model_size=7):
+    model_card = f'meta-llama/Llama-2-{model_size}b-hf'
+    workdir    = f'./zkllm-workdir/Llama-2-{model_size}b'
+    tokenizer = AutoTokenizer.from_pretrained(model_card, local_files_only=True)
+    model = AutoModelForCausalLM.from_pretrained(model_card, local_files_only=True)
+    model.eval()
+    embed_dim  = model.model.layers[0].self_attn.q_proj.in_features
+    hidden_dim = model.model.layers[0].mlp.up_proj.out_features
+    num_layers = len(model.model.layers)
+    ensure_swiglu()
+    return tokenizer, model, embed_dim, hidden_dim, num_layers, workdir
+
+def run_cmd(cmd, msg=None):
+    if os.system(cmd) != 0:
+        if msg:
+            print(msg)
+        raise RuntimeError(f'Command failed: {cmd}')
+
 def ensure_swiglu():
     if not os.path.exists(SWIGLU_TABLE):
         Xs = torch.arange(-(1 << 9), 1 << 9, step=1 / (1 << 12), device=0)
@@ -50,11 +70,11 @@ def run_layer(layer, layer_idx, seq_len, embed_dim, hidden_dim, workdir, input_f
                      dtype=torch.float64, device=0) / (1 << SCALING_LOG)
     rms_inv = 1 / torch.sqrt(torch.mean(X ** 2, dim=1) + layer.input_layernorm.variance_epsilon)
     save_int(rms_inv.float(), 1 << SCALING_LOG, 'rms_inv_temp.bin')
-    os.system(f'./rmsnorm input {input_file} {seq_len} {embed_dim} {workdir} {lp} {attn_in}')
+    run_cmd(f'./rmsnorm input {input_file} {seq_len} {embed_dim} {workdir} {lp} {attn_in}')
     os.remove('rms_inv_temp.bin')
 
     # 2. Self-attention
-    os.system(f'./self-attn linear {attn_in} {seq_len} {embed_dim} {workdir} {lp} {attn_out}')
+    run_cmd(f'./self-attn linear {attn_in} {seq_len} {embed_dim} {workdir} {lp} {attn_out}')
 
     Q = load_int('temp_Q.bin').reshape(seq_len, embed_dim).float() / (1 << VALUE_LOGSF)
     K = load_int('temp_K.bin').reshape(seq_len, embed_dim).float() / (1 << VALUE_LOGSF)
@@ -71,7 +91,7 @@ def run_layer(layer, layer_idx, seq_len, embed_dim, hidden_dim, workdir, input_f
     Q = (Q * cos.unsqueeze(0) + rotate_half(Q) * sin.unsqueeze(0)).to(torch.float64)
     K = (K * cos.unsqueeze(0) + rotate_half(K) * sin.unsqueeze(0)).to(torch.float64)
 
-    A = to_int64(Q @ K.transpose(-2, -1), VALUE_LOGSF)
+    A = to_int64(Q @ K.transpose(-2, -1), ACCU_LOGSF)
     mask = torch.triu(torch.ones(seq_len, seq_len, device=0, dtype=bool), diagonal=1)
     A -= torch.max(A * ~mask, dim=-1, keepdim=True).values
     shift = math.sqrt(layer.self_attn.head_dim) * torch.log(
@@ -82,8 +102,8 @@ def run_layer(layer, layer_idx, seq_len, embed_dim, hidden_dim, workdir, input_f
     attn_v = fromto_int64(attn_weights @ V, VALUE_LOGSF)
     save_int(attn_v.transpose(0, 1).contiguous().view(seq_len, embed_dim).float(), 1 << VALUE_LOGSF, 'temp_attn_out.bin')
 
-    os.system(f'./self-attn attn {attn_in} {seq_len} {embed_dim} {workdir} {lp} {attn_out}')
-    os.system('rm -f ./temp_Q.bin ./temp_K.bin ./temp_V.bin ./temp_attn_out.bin')
+    run_cmd(f'./self-attn attn {attn_in} {seq_len} {embed_dim} {workdir} {lp} {attn_out}')
+    run_cmd('rm -f ./temp_Q.bin ./temp_K.bin ./temp_V.bin ./temp_attn_out.bin')
 
     # Apply output projection (o_proj) — not proved by the binary, done in Python
     attn_v_flat = attn_v.float().transpose(0, 1).contiguous().view(seq_len, embed_dim).cpu()
@@ -92,21 +112,21 @@ def run_layer(layer, layer_idx, seq_len, embed_dim, hidden_dim, workdir, input_f
     save_int(attn_out_tensor, 1 << SCALING_LOG, attn_out)
 
     # 3. Skip connection (attention)
-    os.system(f'./skip-connection {input_file} {attn_out} {post_attn}')
+    run_cmd(f'./skip-connection {input_file} {attn_out} {post_attn}')
 
     # 4. Post-attention RMSNorm
     X2 = torch.tensor(np.fromfile(post_attn, dtype=np.int32).reshape(seq_len, embed_dim),
                       dtype=torch.float64, device=0) / (1 << SCALING_LOG)
     rms_inv2 = 1 / torch.sqrt(torch.mean(X2 ** 2, dim=1) + layer.post_attention_layernorm.variance_epsilon)
     save_int(rms_inv2.float(), 1 << SCALING_LOG, 'rms_inv_temp.bin')
-    os.system(f'./rmsnorm post_attention {post_attn} {seq_len} {embed_dim} {workdir} {lp} {ffn_in}')
+    run_cmd(f'./rmsnorm post_attention {post_attn} {seq_len} {embed_dim} {workdir} {lp} {ffn_in}')
     os.remove('rms_inv_temp.bin')
 
     # 5. FFN
-    os.system(f'./ffn {ffn_in} {seq_len} {embed_dim} {hidden_dim} {workdir} {lp} {ffn_out}')
+    run_cmd(f'./ffn {ffn_in} {seq_len} {embed_dim} {hidden_dim} {workdir} {lp} {ffn_out}')
 
     # 6. Skip connection (FFN)
-    os.system(f'./skip-connection {post_attn} {ffn_out} {output_file}')
+    run_cmd(f'./skip-connection {post_attn} {ffn_out} {output_file}')
 
     for f in [attn_in, attn_out, post_attn, ffn_in, ffn_out]:
         if os.path.exists(f):
@@ -144,48 +164,69 @@ def forward_pass(token_ids, model, embed_dim, hidden_dim, num_layers, workdir):
         hidden = model.model.norm(hidden[seq_len - 1].unsqueeze(0))
         logits = model.lm_head(hidden)
 
-    return logits[-1].argmax().item()
-
+    return logits[-1]
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='zkLLM multi-token generation with LLaMA-2')
-    parser.add_argument('text', type=str, help='Input prompt')
+    parser.add_argument('input_file', type=str, help='JSON file containing a list of prompts')
     parser.add_argument('--model_size', type=int, choices=[7, 13], default=7)
     parser.add_argument('--max_new_tokens', type=int, default=1)
     args = parser.parse_args()
 
-    if os.system('make all') != 0:
-        print('Build failed'); sys.exit(1)
+    run_cmd('make all', "Build failed")
 
-    model_card = f'meta-llama/Llama-2-{args.model_size}b-hf'
-    workdir    = f'./zkllm-workdir/Llama-2-{args.model_size}b'
+    tokenizer, model, embed_dim, hidden_dim, num_layers, workdir = setup()
 
-    print(f'Loading {model_card}...')
-    tokenizer = AutoTokenizer.from_pretrained(model_card, local_files_only=True)
-    model = AutoModelForCausalLM.from_pretrained(model_card, local_files_only=True)
-    model.eval()
+    with open(args.input_file) as f:
+        prompts = json.load(f)
+    if not isinstance(prompts, list) or not all(isinstance(p, str) for p in prompts):
+        print('Error: JSON file must contain a list of strings'); sys.exit(1)
 
-    embed_dim  = model.model.layers[0].self_attn.q_proj.in_features
-    hidden_dim = model.model.layers[0].mlp.up_proj.out_features
-    num_layers = len(model.model.layers)
+    print(f'\nRunning inference for {len(prompts)} prompt(s)...')
+    results = []
+    for idx, text in enumerate(prompts):
+        print(f'\n--- Input {idx + 1}/{len(prompts)} ---')
+        token_ids = tokenizer(text, return_tensors='pt')['input_ids']
+        print(f'Prompt ({token_ids.shape[1]} tokens): {text}')
+        print('Generating: ', end='', flush=True)
 
-    ensure_swiglu()
+        zk_logits = None
+        generated = []
+        original_token_ids = token_ids
+        for step in range(args.max_new_tokens):
+            print(f'[step {step+1}]', end=' ', flush=True)
+            zk_logits = forward_pass(token_ids, model, embed_dim, hidden_dim, num_layers, workdir)
 
-    token_ids = tokenizer(args.text, return_tensors='pt')['input_ids']
-    print(f'\nPrompt ({token_ids.shape[1]} tokens): {args.text}')
-    print('Generating: ', end='', flush=True)
+            next_id = zk_logits.argmax().item()
+            if next_id == tokenizer.eos_token_id:
+                print('<eos>')
+                break
 
-    generated = []
-    for step in range(args.max_new_tokens):
-        print(f'[step {step+1}]', end=' ', flush=True)
-        next_id = forward_pass(token_ids, model, embed_dim, hidden_dim, num_layers, workdir)
+            generated.append(next_id)
+            token_ids = torch.cat([token_ids, torch.tensor([[next_id]])], dim=1)
+            print(tokenizer.decode([next_id]), end='', flush=True)
 
-        if next_id == tokenizer.eos_token_id:
-            print('<eos>')
-            break
+        output_text = tokenizer.decode(generated)
 
-        generated.append(next_id)
-        token_ids = torch.cat([token_ids, torch.tensor([[next_id]])], dim=1)
-        print(tokenizer.decode([next_id]), end='', flush=True)
+        print(f'\n\nFull output: {text}{output_text}')
 
-    print(f'\n\nFull output: {args.text}{tokenizer.decode(generated)}')
+        # Compare with base model
+        model.cpu()
+        with torch.no_grad():
+            base_output = model(original_token_ids)  
+
+            base_logits = base_output.logits[0, -1]
+            kl = F.kl_div(F.log_softmax(zk_logits, dim=-1), F.softmax(base_logits, dim=-1), reduction='sum').item()
+            
+            results.append({
+                'input': text,
+                'zk_output': output_text,
+                'base_output': tokenizer.decode([base_logits.argmax().item()]),
+                'kl_div': kl,
+                'zk_logits': zk_logits.tolist() if zk_logits is not None else [],
+                'base_logits': base_logits.tolist(),
+            })
+        
+    with open('output.json', 'w') as f:
+        json.dump(results, f, indent=2)
+    print(f'\nResults written to output.json')

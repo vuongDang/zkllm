@@ -78,7 +78,7 @@ int main(int argc, char *argv[])
     auto down_out = down_layer(down_in_);
     auto down_out_ = down_rescale(down_out);
 
-    down_out.save_int(output_file_name);
+    down_out_.save_int(output_file_name);
 
     down_rescale.prove(down_out, down_out_);
     verifyWeightClaim(down_proj, down_layer.prove(down_in_, down_out)[0]);

@@ -56,11 +56,26 @@ python llama-commit.py 7 16     # commits model weights
 make all
 ```
 
-### 7. Run
-
-```bash
-python full_run.py "Your prompt here" --max_new_tokens 1
+### 8 Generate suitable inputs
+``bash
+python create_input.py 
 ```
+
 Actually seq_len is fixed at 256 currently.
 If the prompt is smaller the rest is padded with 0 which creates really weird results.
 Prompt of size seq_len should be used
+
+The inputs created are based from-hard coded values in the script.
+This script produces file "inputs.json"
+
+### 7. Run
+
+```bash
+python full_run.py inputs.json
+```
+
+This runs inference for all the inputs in "inputs.json".
+input, output token and logits are stored in "outputs.json".
+
+
+
