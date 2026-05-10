@@ -6,6 +6,7 @@ import math
 import torch
 import numpy as np
 
+import time
 import torch.nn.functional as F
 import fileio_utils
 from fileio_utils import load_int, save_int, to_int64, to_float, fromto_int64
@@ -171,9 +172,11 @@ if __name__ == '__main__':
     parser.add_argument('input_file', type=str, help='JSON file containing a list of prompts')
     parser.add_argument('--model_size', type=int, choices=[7, 13], default=7)
     parser.add_argument('--max_new_tokens', type=int, default=1)
+    parser.add_argument('--skip-build', action='store_true')
     args = parser.parse_args()
 
-    run_cmd('make all', "Build failed")
+    if not args.skip_build:
+        run_cmd('make all', "Build failed")
 
     tokenizer, model, embed_dim, hidden_dim, num_layers, workdir = setup()
 
@@ -193,6 +196,7 @@ if __name__ == '__main__':
         zk_logits = None
         generated = []
         original_token_ids = token_ids
+        zk_start = time.time()
         for step in range(args.max_new_tokens):
             print(f'[step {step+1}]', end=' ', flush=True)
             zk_logits = forward_pass(token_ids, model, embed_dim, hidden_dim, num_layers, workdir)
@@ -206,26 +210,33 @@ if __name__ == '__main__':
             token_ids = torch.cat([token_ids, torch.tensor([[next_id]])], dim=1)
             print(tokenizer.decode([next_id]), end='', flush=True)
 
+        zk_time = time.time() - zk_start
         output_text = tokenizer.decode(generated)
 
         print(f'\n\nFull output: {text}{output_text}')
 
         # Compare with base model
         model.cpu()
+        base_start = time.time()
         with torch.no_grad():
-            base_output = model(original_token_ids)  
+            base_output = model(original_token_ids)
+        base_time = time.time() - base_start
 
-            base_logits = base_output.logits[0, -1]
-            kl = F.kl_div(F.log_softmax(zk_logits, dim=-1), F.softmax(base_logits, dim=-1), reduction='sum').item()
-            
-            results.append({
-                'input': text,
-                'zk_output': output_text,
-                'base_output': tokenizer.decode([base_logits.argmax().item()]),
-                'kl_div': kl,
-                'zk_logits': zk_logits.tolist() if zk_logits is not None else [],
-                'base_logits': base_logits.tolist(),
-            })
+        base_logits = base_output.logits[0, -1]
+        base_token = tokenizer.decode([base_logits.argmax().item()])
+        kl = F.kl_div(F.log_softmax(zk_logits, dim=-1), F.softmax(base_logits, dim=-1), reduction='sum').item()
+
+        results.append({
+            'input': text,
+            'zk_output': output_text,
+            'base_output': base_token,
+            'match': output_text == base_token,
+            'kl_div': kl,
+            'zk_time': zk_time,
+            'base_time': base_time,
+            # 'zk_logits': zk_logits.tolist() if zk_logits is not None else [],
+            # 'base_logits': base_logits.tolist(),
+        })
         
     with open('output.json', 'w') as f:
         json.dump(results, f, indent=2)
